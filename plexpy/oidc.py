@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 
 #  This file is part of Tautulli.
 #
@@ -53,7 +54,7 @@ class OIDCError(Exception):
     """A login failure. The message is safe to show to the user."""
 
 
-class OIDCAccessDenied(OIDCError):
+class OIDCAccessDeniedError(OIDCError):
     """The identity provider authenticated the user, but Tautulli does not allow them."""
 
     def __init__(self, message, username=None):
@@ -175,8 +176,8 @@ def get_discovery():
         discovery = _get_json('GET', issuer.rstrip('/') + '/.well-known/openid-configuration')
 
         if discovery.get('issuer', '').rstrip('/') != issuer.rstrip('/'):
-            logger.error("Tautulli OIDC :: The discovery document issuer '%s' does not match the configured issuer '%s'.",
-                         discovery.get('issuer'), issuer)
+            logger.error("Tautulli OIDC :: The discovery document issuer '%s' does not match "
+                         "the configured issuer '%s'.", discovery.get('issuer'), issuer)
             raise OIDCError("OpenID Connect login is not configured correctly.")
 
         for endpoint in ('authorization_endpoint', 'token_endpoint', 'jwks_uri'):
@@ -447,13 +448,13 @@ def get_username(claims):
 
 
 def authorize(claims):
-    """Returns the username if the user is allowed to log in, otherwise raises OIDCAccessDenied."""
+    """Returns the username if the user is allowed to log in, otherwise raises OIDCAccessDeniedError."""
     username = get_username(claims)
     allowed_users = split_list(plexpy.CONFIG.OIDC_ALLOWED_USERS)
     allowed_groups = split_list(plexpy.CONFIG.OIDC_ALLOWED_GROUPS)
 
     if not allowed_users and not allowed_groups:
-        raise OIDCAccessDenied("You are not allowed to log in to Tautulli.", username=username)
+        raise OIDCAccessDeniedError("You are not allowed to log in to Tautulli.", username=username)
 
     if claims['sub'] in allowed_users:
         return username
@@ -470,4 +471,4 @@ def authorize(claims):
         if set(groups).intersection(allowed_groups):
             return username
 
-    raise OIDCAccessDenied("You are not allowed to log in to Tautulli.", username=username)
+    raise OIDCAccessDeniedError("You are not allowed to log in to Tautulli.", username=username)

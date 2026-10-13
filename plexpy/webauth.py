@@ -539,14 +539,15 @@ class AuthController(object):
         if error or not code:
             logger.warn("Tautulli WebAuth :: OIDC provider returned an error: %s" % (error or 'missing code'))
             cherrypy.response.status = 401
-            return self.get_loginform(redirect_uri=redirect_uri, error='The identity provider did not complete the login.')
+            return self.get_loginform(redirect_uri=redirect_uri,
+                                      error='The identity provider did not complete the login.')
 
         try:
             tokens = oidc.exchange_code(code, login_request['redirect_uri'], login_request['code_verifier'])
             claims = oidc.validate_id_token(tokens['id_token'], login_request['nonce'])
             claims = oidc.complete_claims(claims, tokens.get('access_token'))
             username = oidc.authorize(claims)
-        except oidc.OIDCAccessDenied as e:
+        except oidc.OIDCAccessDeniedError as e:
             self.on_login(username=e.username or 'OIDC')
             logger.warn("Tautulli WebAuth :: OIDC user '%s' is not allowed to log in." % e.username)
             cherrypy.response.status = 403

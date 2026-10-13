@@ -325,7 +325,7 @@ def test_only_allowed_users_and_groups_can_log_in(app_config, users, groups, cla
     if allowed:
         assert oidc.authorize(claims)
     else:
-        with pytest.raises(oidc.OIDCAccessDenied):
+        with pytest.raises(oidc.OIDCAccessDeniedError):
             oidc.authorize(claims)
 
 
