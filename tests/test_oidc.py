@@ -22,7 +22,9 @@ import requests
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 import plexpy
-from plexpy import oidc, request, webauth, webserve, webstart
+import plexpy.config
+from plexpy import libraries, logger, oidc, plextv, request, users, webauth, webserve, webstart
+from tests.test_static_files import Mounted
 
 ISSUER = "https://idp.example.com/realm"
 CLIENT_ID = "tautulli"
@@ -137,13 +139,9 @@ def oidc_config(app_config):
     ("hash", 1, 0, False, True),
     ("hash", 1, 1, False, True),
 ])
-def test_auth_mode(password, basic, oidc_on, form, basic_on):
+def test_oidc_turns_on_form_auth_unless_basic_auth_is_used(password, basic, oidc_on, form, basic_on):
     assert webauth.use_form_auth(password, basic, oidc_on) is form
     assert webauth.use_basic_auth(password, basic) is basic_on
-
-
-class Mounted(Exception):
-    pass
 
 
 def initialize(monkeypatch, **options):
@@ -188,19 +186,27 @@ def test_no_login_method_leaves_auth_off(app_config, monkeypatch):
     assert conf["/"]["tools.auth.on"] is False
 
 
-def test_config_errors(oidc_config, monkeypatch):
+@pytest.mark.parametrize("setting, value, error", [
+    ("OIDC_ALLOWED_GROUPS", "", "nobody can log in"),
+    ("OIDC_ISSUER", "", "issuer URL is not set"),
+    ("OIDC_ISSUER", "http://idp.example.com", "must use HTTPS"),
+    ("OIDC_CLIENT_ID", "", "client ID is not set"),
+])
+def test_an_incomplete_config_is_reported(oidc_config, setting, value, error):
+    setattr(oidc_config, setting, value)
+    assert any(error in e for e in oidc.config_errors())
+
+
+def test_a_complete_config_reports_no_errors(oidc_config):
     assert oidc.config_errors() == []
 
-    oidc_config.OIDC_ALLOWED_GROUPS = ""
-    assert any("nobody can log in" in e for e in oidc.config_errors())
 
-    oidc_config.OIDC_ALLOWED_GROUPS = "admins"
-    oidc_config.OIDC_ISSUER = "http://idp.example.com"
-    assert any("HTTPS" in e for e in oidc.config_errors())
-
+def test_a_loopback_issuer_may_use_http(oidc_config):
     oidc_config.OIDC_ISSUER = "http://127.0.0.1:9000/realm"
     assert oidc.config_errors() == []
 
+
+def test_oidc_needs_the_cryptography_library(oidc_config, monkeypatch):
     monkeypatch.setattr(jwt.algorithms, "has_crypto", False)
     assert any("cryptography" in e for e in oidc.config_errors())
 
@@ -312,7 +318,7 @@ def test_userinfo_fills_in_missing_groups_without_overriding_the_id_token(oidc_c
     ("alice@example.com", "", {"sub": "a", "email": "alice@example.com"}, False),
     ("alice", "", {"sub": "a", "preferred_username": "alice"}, False),
 ])
-def test_authorize(app_config, users, groups, claims, allowed):
+def test_only_allowed_users_and_groups_can_log_in(app_config, users, groups, claims, allowed):
     app_config.OIDC_ALLOWED_USERS = users
     app_config.OIDC_ALLOWED_GROUPS = groups
 
@@ -359,7 +365,7 @@ class Client:
         result = {}
 
         def start_response(status, response_headers, exc_info=None):
-            result["status"] = int(status.split()[0])
+            result["status"] = status
             result["headers"] = response_headers
 
         body = b"".join(self.app(environ, start_response))
@@ -383,7 +389,7 @@ def client(app_db, oidc_config, provider, monkeypatch):
 
 def start_login(client, provider, **query):
     status, headers, _ = client.get("/auth/oidc_login", query)
-    assert status in (302, 303)
+    assert status.startswith("303")
     location = urlparse(headers["Location"])
     params = {k: v[0] for k, v in parse_qs(location.query).items()}
     provider.nonce = params["nonce"]
@@ -396,17 +402,17 @@ def jwt_cookie(client):
 
 def test_protected_pages_redirect_to_login_when_oidc_is_the_only_method(client):
     status, headers, _ = client.get("/home")
-    assert status in (302, 303)
+    assert status.startswith("303")
     assert "/auth/logout" in headers["Location"]
 
     status, _, _ = client.get("/home", headers={"X-Requested-With": "XMLHttpRequest"})
-    assert status == 401
+    assert status.startswith("401")
 
 
 def test_login_page_shows_oidc_and_hides_the_password_form(client):
     status, _, body = client.get("/auth/login")
 
-    assert status == 200
+    assert status.startswith("200")
     assert 'id="sign-in-oidc"' in body
     assert 'id="login-form"' not in body
 
@@ -427,20 +433,20 @@ def test_a_successful_login_issues_a_session_and_opens_protected_pages(client, p
 
     status, headers, _ = client.get("/auth/oidc_callback", {"code": "abc", "state": params["state"]})
 
-    assert status in (302, 303)
+    assert status.startswith("303")
     assert headers["Location"].endswith("/auth/redirect?redirect_uri=/history")
     token = jwt_cookie(client)
     payload = jwt.decode(token, plexpy.CONFIG.JWT_SECRET, algorithms=["HS256"])
     assert payload["user"] == "alice"
     assert payload["user_group"] == "admin"
 
-    request = provider.token_requests[0]
-    assert request["data"]["code"] == "abc"
-    assert request["data"]["code_verifier"]
-    assert request["headers"]["Authorization"].startswith("Basic ")
+    token_request = provider.token_requests[0]
+    assert token_request["data"]["code"] == "abc"
+    assert token_request["data"]["code_verifier"]
+    assert token_request["headers"]["Authorization"].startswith("Basic ")
 
     status, headers, _ = client.get("/auth/redirect", {"redirect_uri": "/history"})
-    assert status in (302, 303)
+    assert status.startswith("303")
     assert headers["Location"].endswith("/history")
 
 
@@ -451,7 +457,7 @@ def test_a_state_can_only_be_used_once(client, provider):
 
     status, _, _ = client.get("/auth/oidc_callback", {"code": "abc", "state": params["state"]})
 
-    assert status == 400
+    assert status.startswith("400")
     assert jwt_cookie(client) is None
 
 
@@ -460,7 +466,7 @@ def test_a_forged_state_is_rejected(client, provider):
 
     status, _, _ = client.get("/auth/oidc_callback", {"code": "abc", "state": "forged"})
 
-    assert status == 400
+    assert status.startswith("400")
     assert jwt_cookie(client) is None
     assert provider.token_requests == []
 
@@ -471,7 +477,7 @@ def test_a_callback_from_another_browser_session_is_rejected(client, provider):
 
     status, _, _ = client.get("/auth/oidc_callback", {"code": "abc", "state": params["state"]})
 
-    assert status == 400
+    assert status.startswith("400")
     assert jwt_cookie(client) is None
 
 
@@ -481,11 +487,11 @@ def test_a_user_outside_the_allowed_groups_is_denied(client, provider):
 
     status, _, body = client.get("/auth/oidc_callback", {"code": "abc", "state": params["state"]})
 
-    assert status == 403
+    assert status.startswith("403")
     assert "not allowed" in body
     assert jwt_cookie(client) is None
     status, _, _ = client.get("/home")
-    assert status in (302, 303)
+    assert status.startswith("303")
 
 
 def test_a_provider_error_is_a_failed_login(client, provider):
@@ -493,7 +499,7 @@ def test_a_provider_error_is_a_failed_login(client, provider):
 
     status, _, _ = client.get("/auth/oidc_callback", {"error": "access_denied", "state": params["state"]})
 
-    assert status == 401
+    assert status.startswith("401")
     assert jwt_cookie(client) is None
 
 
@@ -503,7 +509,7 @@ def test_a_bad_id_token_is_a_failed_login(client, provider):
 
     status, _, _ = client.get("/auth/oidc_callback", {"code": "abc", "state": params["state"]})
 
-    assert status == 401
+    assert status.startswith("401")
     assert jwt_cookie(client) is None
 
 
@@ -511,12 +517,12 @@ def test_a_provider_outage_fails_closed(client, provider):
     provider.down = True
 
     status, _, body = client.get("/auth/oidc_login")
-    assert status == 503
+    assert status.startswith("503")
     assert "Unable to reach the identity provider" in body
     assert jwt_cookie(client) is None
 
     status, headers, _ = client.get("/home")
-    assert status in (302, 303)
+    assert status.startswith("303")
     assert "/auth/logout" in headers["Location"]
 
 
@@ -527,7 +533,7 @@ def test_a_provider_outage_during_the_callback_fails_closed(client, provider):
 
     status, _, _ = client.get("/auth/oidc_callback", {"code": "abc", "state": params["state"]})
 
-    assert status == 401
+    assert status.startswith("401")
     assert jwt_cookie(client) is None
 
 
@@ -535,24 +541,24 @@ def test_a_misconfigured_provider_fails_closed(client, provider):
     plexpy.CONFIG.OIDC_ISSUER = ""
 
     status, _, _ = client.get("/auth/oidc_login")
-    assert status == 503
+    assert status.startswith("503")
     assert provider.calls == []
 
     status, _, _ = client.get("/home")
-    assert status in (302, 303)
+    assert status.startswith("303")
 
 
 def test_disabling_oidc_after_startup_keeps_pages_locked(client, provider):
     plexpy.CONFIG.OIDC_ENABLED = 0
 
     status, headers, _ = client.get("/auth/oidc_login")
-    assert status in (302, 303)
+    assert status.startswith("303")
     assert headers["Location"].endswith("/auth/login")
 
     status, _, _ = client.get("/home")
-    assert status in (302, 303)
+    assert status.startswith("303")
     status, _, _ = client.get("/auth/login")
-    assert status == 200
+    assert status.startswith("200")
 
 
 # ---------------------------------------------------------------------------
@@ -561,8 +567,6 @@ def test_disabling_oidc_after_startup_keeps_pages_locked(client, provider):
 
 @pytest.fixture
 def web(app_config, monkeypatch):
-    from plexpy import libraries, logger, plextv, users
-
     monkeypatch.setattr(logger, "initLogger", lambda **kwargs: None)
     # configUpdate also reschedules tasks and refreshes the server data.
     monkeypatch.setattr(plexpy, "initialize_scheduler", lambda: None)
@@ -618,7 +622,7 @@ def test_settings_page_renders_oidc_options_without_the_secret(client, provider)
 
     status, _, body = client.get("/settings")
 
-    assert status == 200
+    assert status.startswith("200")
     assert 'id="oidc_issuer"' in body
     assert ISSUER in body
     assert "http://localhost:8181/auth/oidc_callback" in body
@@ -627,8 +631,6 @@ def test_settings_page_renders_oidc_options_without_the_secret(client, provider)
 
 def test_the_client_secret_is_redacted_from_the_logs_but_the_client_id_is_not(tmp_path, monkeypatch):
     # Client IDs are often just "tautulli", which would redact every log line that names it.
-    from plexpy import logger
-
     monkeypatch.setattr(logger, "_BLACKLIST_WORDS", set())
     ini_path = tmp_path / "config.ini"
     ini_path.write_text("[OIDC]\noidc_client_id = tautulli\noidc_client_secret = %s\n" % CLIENT_SECRET)
@@ -640,9 +642,7 @@ def test_the_client_secret_is_redacted_from_the_logs_but_the_client_id_is_not(tm
 
 
 def test_oidc_settings_are_not_imported_or_downloaded():
-    from plexpy import config
-
-    for key in config._CONFIG_DEFINITIONS:
+    for key in plexpy.config._CONFIG_DEFINITIONS:
         if key.startswith("OIDC_"):
-            assert key in config._DO_NOT_IMPORT_KEYS
-    assert "OIDC_CLIENT_SECRET" in config._DO_NOT_DOWNLOAD_KEYS
+            assert key in plexpy.config._DO_NOT_IMPORT_KEYS
+    assert "OIDC_CLIENT_SECRET" in plexpy.config._DO_NOT_DOWNLOAD_KEYS
