@@ -753,6 +753,106 @@
                             <p class="help-block">Allow shared users to login to Tautulli using their Plex.tv account. Individual user access needs to be enabled from Users > Edit Mode.</p>
                         </div>
 
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox" class="auth-settings" id="oidc_enabled" name="oidc_enabled" value="1" ${config['oidc_enabled']}> Enable OpenID Connect Login
+                            </label>
+                            <p class="help-block">Allow users to login as a Tautulli admin using an OpenID Connect identity provider. Web server authentication stays enabled even if the provider is unavailable or misconfigured.</p>
+                        </div>
+                        <div id="oidc_options">
+                            <div class="form-group">
+                                <label for="oidc_callback_url">Redirect URI</label>
+                                <div class="row">
+                                    <div class="col-md-9">
+                                        <input type="text" class="form-control" id="oidc_callback_url" value="${oidc_callback_url}" readonly>
+                                    </div>
+                                </div>
+                                <p class="help-block">Register this redirect URI with your identity provider. Set the Public Tautulli Domain to change it.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="oidc_provider_name">Provider Name</label>
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <input type="text" class="form-control auth-settings" id="oidc_provider_name" name="oidc_provider_name" value="${config['oidc_provider_name']}" placeholder="OpenID Connect" size="30">
+                                    </div>
+                                </div>
+                                <p class="help-block">The name shown on the login page.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="oidc_issuer">Issuer URL</label>
+                                <div class="row">
+                                    <div class="col-md-9">
+                                        <input type="text" class="form-control auth-settings" id="oidc_issuer" name="oidc_issuer" value="${config['oidc_issuer']}" placeholder="https://auth.example.com/application/o/tautulli/" data-parsley-trigger="change" data-parsley-pattern="^https?:\/\/\S+$" data-parsley-errors-container="#oidc_issuer_error" data-parsley-error-message="Invalid URL">
+                                    </div>
+                                    <div id="oidc_issuer_error" class="alert alert-danger settings-alert" role="alert"></div>
+                                </div>
+                                <p class="help-block">The issuer URL of your identity provider. It must use HTTPS. Tautulli reads the provider settings from /.well-known/openid-configuration.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="oidc_client_id">Client ID</label>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <input type="text" class="form-control auth-settings" id="oidc_client_id" name="oidc_client_id" value="${config['oidc_client_id']}" autocomplete="off">
+                                    </div>
+                                </div>
+                                <p class="help-block">The client ID of the Tautulli application in your identity provider.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="oidc_client_secret">Client Secret</label>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <input type="password" class="form-control auth-settings" id="oidc_client_secret" name="oidc_client_secret" value="${config['oidc_client_secret']}" autocomplete="new-password">
+                                    </div>
+                                </div>
+                                <p class="help-block">Leave empty for a public client.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="oidc_allowed_users">Allowed Users</label>
+                                <div class="row">
+                                    <div class="col-md-9">
+                                        <input type="text" class="form-control auth-settings" id="oidc_allowed_users" name="oidc_allowed_users" value="${config['oidc_allowed_users']}" placeholder="admin@example.com">
+                                    </div>
+                                </div>
+                                <p class="help-block">Comma separated list of verified email addresses or subject IDs allowed to login.</p>
+                            </div>
+                            <div class="form-group">
+                                <label for="oidc_allowed_groups">Allowed Groups</label>
+                                <div class="row">
+                                    <div class="col-md-9">
+                                        <input type="text" class="form-control auth-settings" id="oidc_allowed_groups" name="oidc_allowed_groups" value="${config['oidc_allowed_groups']}" placeholder="tautulli-admins">
+                                    </div>
+                                </div>
+                                <p class="help-block">Comma separated list of groups allowed to login. Nobody can login if both Allowed Users and Allowed Groups are empty.</p>
+                            </div>
+                            <div class="form-group advanced-setting">
+                                <label for="oidc_scopes">Scopes</label>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <input type="text" class="form-control auth-settings" id="oidc_scopes" name="oidc_scopes" value="${config['oidc_scopes']}">
+                                    </div>
+                                </div>
+                                <p class="help-block">Space separated list of scopes to request. Add the scope your provider needs to include groups.</p>
+                            </div>
+                            <div class="form-group advanced-setting">
+                                <label for="oidc_username_claim">Username Claim</label>
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <input type="text" class="form-control auth-settings" id="oidc_username_claim" name="oidc_username_claim" value="${config['oidc_username_claim']}">
+                                    </div>
+                                </div>
+                                <p class="help-block">The claim used for the username shown in Tautulli. It is not used to allow access.</p>
+                            </div>
+                            <div class="form-group advanced-setting">
+                                <label for="oidc_groups_claim">Groups Claim</label>
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <input type="text" class="form-control auth-settings" id="oidc_groups_claim" name="oidc_groups_claim" value="${config['oidc_groups_claim']}">
+                                    </div>
+                                </div>
+                                <p class="help-block">The claim that lists the user's groups.</p>
+                            </div>
+                        </div>
+
                         <div class="padded-header">
                             <h3>API</h3>
                         </div>
@@ -2440,6 +2540,7 @@ $(document).ready(function() {
     });
 
     initConfigCheckbox('#api_enabled');
+    initConfigCheckbox('#oidc_enabled');
     initConfigCheckbox('#enable_https');
     initConfigCheckbox('#https_create_cert');
     initConfigCheckbox('#check_github');
@@ -2965,10 +3066,14 @@ $(document).ready(function() {
         }
     });
 
+    function webAuthEnabled () {
+        return ($('#http_username').val() != '' && $('#http_password').val() != '') || $('#oidc_enabled').is(':checked');
+    }
+
     function allowPlexAdminCheck () {
-        if ($('#http_username').val() == '' || $('#http_password').val() == '') {
+        if (!webAuthEnabled()) {
             $("#http_plex_admin").attr("checked", false).attr("disabled", true);
-            $("#allowPlexCheck").html("You must set an admin username and password above to allow Plex admin login.");
+            $("#allowPlexCheck").html("You must set an admin username and password or enable OpenID Connect login above to allow Plex admin login.");
         } else {
             $("#http_plex_admin").attr("disabled", false);
             $("#allowPlexCheck").html("");
@@ -2976,14 +3081,14 @@ $(document).ready(function() {
     }
     allowPlexAdminCheck();
 
-    $('#http_username, #http_password').change(function () {
+    $('#http_username, #http_password, #oidc_enabled').change(function () {
         allowPlexAdminCheck();
     });
 
     function allowGuestAccessCheck () {
-        if ($('#http_username').val() == '' || $('#http_password').val() == '') {
+        if (!webAuthEnabled()) {
             $("#allow_guest_access").attr("checked", false).attr("disabled", true);
-            $("#allowGuestCheck").html("You must set an admin username and password above to allow guest access.");
+            $("#allowGuestCheck").html("You must set an admin username and password or enable OpenID Connect login above to allow guest access.");
         } else {
             $("#allow_guest_access").attr("disabled", false);
             $("#allowGuestCheck").html("");
@@ -2992,7 +3097,7 @@ $(document).ready(function() {
     }
     allowGuestAccessCheck();
 
-    $('#http_username, #http_password').change(function () {
+    $('#http_username, #http_password, #oidc_enabled').change(function () {
         allowGuestAccessCheck();
     });
 

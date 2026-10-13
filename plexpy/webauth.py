@@ -30,6 +30,7 @@ import jwt
 
 import plexpy
 from plexpy import logger
+from plexpy import oidc
 from plexpy.database import MonitorDatabase
 from plexpy.helpers import hash_pms_uuid, timestamp
 from plexpy.session import generate_csrf_token
@@ -46,6 +47,21 @@ Morsel._reserved[str('samesite')] = str('SameSite')
 
 JWT_ALGORITHM = 'HS256'
 JWT_COOKIE_NAME = 'tautulli_token_'
+OIDC_SESSION_KEY = '_oidc_login_requests'
+
+
+def use_basic_auth(http_password, http_basic_auth):
+    """Returns True if HTTP basic authentication protects the web interface."""
+    return bool(http_password) and bool(http_basic_auth)
+
+
+def use_form_auth(http_password, http_basic_auth, oidc_enabled):
+    """Form login protects the web interface whenever any login method is configured,
+    unless HTTP basic authentication replaces it. OIDC enables it on its own, without a password,
+    so a broken OIDC config or provider outage leaves the web interface locked instead of open."""
+    if use_basic_auth(http_password, http_basic_auth):
+        return False
+    return bool(http_password) or bool(oidc_enabled)
 
 
 def plex_user_login(token=None, headers=None):
@@ -293,12 +309,14 @@ def check_csrf_token():
 class AuthController(object):
 
     def check_auth_enabled(self):
-        if not plexpy.CONFIG.HTTP_BASIC_AUTH and plexpy.CONFIG.HTTP_PASSWORD:
+        # Follow the auth tool that is actually running. Settings saved since the last
+        # restart must not make the login pages unreachable while pages still require a login.
+        if plexpy.AUTH_ENABLED:
             return
         raise cherrypy.HTTPRedirect(plexpy.HTTP_ROOT)
 
     def on_login(self, username=None, user_id=None, user_group=None, success=False, oauth=False,
-                 expiry=None, jwt_token=None):
+                 expiry=None, jwt_token=None, method=None):
         """Called on successful login"""
 
         # Save login to the database
@@ -317,9 +335,9 @@ class AuthController(object):
                                jwt_token=jwt_token)
 
         if success:
-            use_oauth = 'Plex OAuth' if oauth else 'form'
+            method = method or ('Plex OAuth' if oauth else 'form')
             logger.debug("Tautulli WebAuth :: %s user '%s' logged into Tautulli using %s login."
-                         % (user_group.capitalize(), username, use_oauth))
+                         % (user_group.capitalize(), username, method))
 
     def on_logout(self, username, user_group, jwt_token=None):
         """Called on logout"""
@@ -329,14 +347,58 @@ class AuthController(object):
 
         logger.debug("Tautulli WebAuth :: %s user '%s' logged out of Tautulli." % (user_group.capitalize(), username))
 
-    def get_loginform(self, redirect_uri=''):
+    def get_loginform(self, redirect_uri='', error=None):
         from plexpy.webserve import serve_template
         # The lock is released once at request end; never double-acquire
         # (serve_template's CSRF helper also acquires)
         if not cherrypy.session.locked:
             cherrypy.session.acquire_lock()
         cherrypy.session['_csrf_token'] = generate_csrf_token()
-        return serve_template(template_name="login.html", title="Login", redirect_uri=unquote(redirect_uri))
+        return serve_template(template_name="login.html", title="Login", redirect_uri=unquote(redirect_uri),
+                              error=error)
+
+    def create_session(self, user_details, user_group, remember_me=False, oauth=False, method=None):
+        """Issues the Tautulli JWT cookie for an authenticated user. Returns the JWT payload and token."""
+        time_delta = timedelta(days=30) if remember_me else timedelta(minutes=60)
+        expiry = datetime.now(tz=timezone.utc) + time_delta
+
+        payload = {
+            'user_id': user_details['user_id'],
+            'user': user_details['username'],
+            'user_group': user_group,
+            'exp': expiry
+        }
+
+        jwt_token = jwt.encode(payload, plexpy.CONFIG.JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+        self.on_login(username=user_details['username'],
+                      user_id=user_details['user_id'],
+                      user_group=user_group,
+                      success=True,
+                      oauth=oauth,
+                      expiry=expiry,
+                      jwt_token=jwt_token,
+                      method=method)
+
+        jwt_cookie = jwt_cookie_name()
+        cherrypy.response.cookie[jwt_cookie] = jwt_token
+        cherrypy.response.cookie[jwt_cookie]['max-age'] = int(time_delta.total_seconds())
+        cherrypy.response.cookie[jwt_cookie]['path'] = plexpy.HTTP_ROOT.rstrip('/') or '/'
+        cherrypy.response.cookie[jwt_cookie]['httponly'] = True
+        cherrypy.response.cookie[jwt_cookie]['samesite'] = 'lax'
+
+        if not cherrypy.session.locked:
+            cherrypy.session.acquire_lock()
+        cherrypy.session['_csrf_token'] = generate_csrf_token()
+        cherrypy.request.login = payload
+
+        return payload, jwt_token
+
+    def oidc_callback_url(self):
+        """Returns the redirect URI to register with the identity provider."""
+        # The provider only redirects to registered URLs, so a spoofed Host header cannot leak the code.
+        base = plexpy.CONFIG.HTTP_BASE_URL.rstrip('/') or cherrypy.request.base.rstrip('/')
+        return base + plexpy.HTTP_ROOT + 'auth/oidc_callback'
 
     @cherrypy.expose
     def index(self, *args, **kwargs):
@@ -397,37 +459,9 @@ class AuthController(object):
                                                                   headers=kwargs)
 
         if valid_login:
-            time_delta = timedelta(days=30) if remember_me == '1' else timedelta(minutes=60)
-            expiry = datetime.now(tz=timezone.utc) + time_delta
-
-            payload = {
-                'user_id': user_details['user_id'],
-                'user': user_details['username'],
-                'user_group': user_group,
-                'exp': expiry
-            }
-
-            jwt_token = jwt.encode(payload, plexpy.CONFIG.JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-            self.on_login(username=user_details['username'],
-                          user_id=user_details['user_id'],
-                          user_group=user_group,
-                          success=True,
-                          oauth=bool(token),
-                          expiry=expiry,
-                          jwt_token=jwt_token)
-
-            jwt_cookie = jwt_cookie_name()
-            cherrypy.response.cookie[jwt_cookie] = jwt_token
-            cherrypy.response.cookie[jwt_cookie]['max-age'] = int(time_delta.total_seconds())
-            cherrypy.response.cookie[jwt_cookie]['path'] = plexpy.HTTP_ROOT.rstrip('/') or '/'
-            cherrypy.response.cookie[jwt_cookie]['httponly'] = True
-            cherrypy.response.cookie[jwt_cookie]['samesite'] = 'lax'
-
-            if not cherrypy.session.locked:
-                cherrypy.session.acquire_lock()
-            cherrypy.session['_csrf_token'] = generate_csrf_token()
-            cherrypy.request.login = payload
+            payload, jwt_token = self.create_session(user_details, user_group,
+                                                     remember_me=remember_me == '1',
+                                                     oauth=bool(token))
             cherrypy.response.status = 200
             return {'status': 'success', 'token': jwt_token, 'uuid': hash_pms_uuid()}
 
@@ -448,6 +482,90 @@ class AuthController(object):
             logger.debug("Tautulli WebAuth :: Invalid Plex OAuth login attempt.")
             cherrypy.response.status = 401
             return error_message
+
+    def check_oidc_enabled(self):
+        """Redirects away from the OIDC pages unless form login and OIDC are both enabled."""
+        self.check_auth_enabled()
+        if not oidc.enabled():
+            raise cherrypy.HTTPRedirect(plexpy.HTTP_ROOT + "auth/login")
+
+    @cherrypy.expose
+    def oidc_login(self, redirect_uri='', remember_me='1', *args, **kwargs):
+        """Starts an OIDC login by redirecting to the identity provider."""
+        self.check_oidc_enabled()
+
+        ip_address = cherrypy.request.remote.ip
+        if check_rate_limit(ip_address):
+            logger.debug("Tautulli WebAuth :: Too many incorrect login attempts from '%s'." % ip_address)
+            cherrypy.response.status = 429
+            return self.get_loginform(redirect_uri=redirect_uri, error='Too many login attempts. Try again later.')
+
+        try:
+            url, state, login_request = oidc.new_login_request(redirect_uri=self.oidc_callback_url(),
+                                                               next_uri=redirect_uri,
+                                                               remember_me=remember_me == '1')
+        except oidc.OIDCError as e:
+            cherrypy.response.status = 503
+            return self.get_loginform(redirect_uri=redirect_uri, error=str(e))
+        except Exception as e:
+            logger.exception("Tautulli WebAuth :: Unexpected error starting OIDC login: %s" % e)
+            cherrypy.response.status = 503
+            return self.get_loginform(redirect_uri=redirect_uri, error='OpenID Connect login failed.')
+
+        if not cherrypy.session.locked:
+            cherrypy.session.acquire_lock()
+        cherrypy.session[OIDC_SESSION_KEY] = oidc.store_login_request(cherrypy.session.get(OIDC_SESSION_KEY),
+                                                                      state, login_request)
+
+        raise cherrypy.HTTPRedirect(url)
+
+    @cherrypy.expose
+    def oidc_callback(self, code=None, state=None, error=None, *args, **kwargs):
+        """Completes an OIDC login when the identity provider redirects back to Tautulli."""
+        self.check_oidc_enabled()
+
+        if not cherrypy.session.locked:
+            cherrypy.session.acquire_lock()
+        login_request, pending = oidc.pop_login_request(cherrypy.session.get(OIDC_SESSION_KEY), state)
+        cherrypy.session[OIDC_SESSION_KEY] = pending
+
+        if not login_request:
+            logger.warn("Tautulli WebAuth :: OIDC callback with an unknown or expired login request.")
+            cherrypy.response.status = 400
+            return self.get_loginform(error='The login request expired or is invalid. Please try again.')
+
+        redirect_uri = login_request['next']
+
+        if error or not code:
+            logger.warn("Tautulli WebAuth :: OIDC provider returned an error: %s" % (error or 'missing code'))
+            cherrypy.response.status = 401
+            return self.get_loginform(redirect_uri=redirect_uri, error='The identity provider did not complete the login.')
+
+        try:
+            tokens = oidc.exchange_code(code, login_request['redirect_uri'], login_request['code_verifier'])
+            claims = oidc.validate_id_token(tokens['id_token'], login_request['nonce'])
+            claims = oidc.complete_claims(claims, tokens.get('access_token'))
+            username = oidc.authorize(claims)
+        except oidc.OIDCAccessDenied as e:
+            self.on_login(username=e.username or 'OIDC')
+            logger.warn("Tautulli WebAuth :: OIDC user '%s' is not allowed to log in." % e.username)
+            cherrypy.response.status = 403
+            return self.get_loginform(redirect_uri=redirect_uri, error=str(e))
+        except oidc.OIDCError as e:
+            self.on_login(username='OIDC')
+            cherrypy.response.status = 401
+            return self.get_loginform(redirect_uri=redirect_uri, error=str(e))
+        except Exception as e:
+            logger.exception("Tautulli WebAuth :: Unexpected error completing OIDC login: %s" % e)
+            self.on_login(username='OIDC')
+            cherrypy.response.status = 401
+            return self.get_loginform(redirect_uri=redirect_uri, error='OpenID Connect login failed.')
+
+        self.create_session({'user_id': None, 'username': username}, 'admin',
+                            remember_me=login_request['remember_me'],
+                            method=oidc.provider_name())
+
+        raise cherrypy.HTTPRedirect(plexpy.HTTP_ROOT + "auth/redirect?redirect_uri=" + quote(redirect_uri or ''))
 
     @cherrypy.expose
     @requireAuth()

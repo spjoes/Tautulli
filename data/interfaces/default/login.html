@@ -1,6 +1,10 @@
 ﻿<%
     import plexpy
+    from plexpy import oidc
+    oidc_login = oidc.enabled()
     plex_login = plexpy.CONFIG.HTTP_PLEX_ADMIN or plexpy.CONFIG.ALLOW_GUEST_ACCESS
+    password_login = bool(plexpy.CONFIG.HTTP_PASSWORD)
+    first_open = 'oidc' if oidc_login else 'plex' if plex_login else 'password'
 %>
 <!doctype html>
 
@@ -47,18 +51,37 @@
                 </div>
                 <div class="row">
                     <div class="col-sm-6 col-sm-offset-3">
-                        <div id="sign-in-alert" class="alert alert-danger login-alert"></div>
+                        <div id="sign-in-alert" class="alert alert-danger login-alert" style="${'display: block;' if error else ''}">${error or ''}</div>
                     </div>
                 </div>
                 <div class="row">
                     <div class="col-sm-6 col-sm-offset-3">
                         <ul id="login-methods" class="accordion list-unstyled">
-                            % if plex_login:
+                            % if oidc_login:
                             <li class="open">
+                                <div class="link login-method-header">
+                                    Sign In with ${oidc.provider_name()}
+                                </div>
+                                <ul class="submenu" style="display: block;">
+                                    <li>
+                                        <div>
+                                            <button id="sign-in-oidc" class="btn btn-bright login-button" data-redirect-uri="${redirect_uri}"><i class="fa fa-sign-in"></i>&nbsp; Sign In</button>
+                                        </div>
+                                        <div class="remember-group">
+                                            <label class="control-label">
+                                                <input type="checkbox" id="remember_me_oidc" name="remember_me_oidc" title="for 30 days" value="1" checked="checked" /> Remember me
+                                            </label>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </li>
+                            % endif
+                            % if plex_login:
+                            <li class="${'open' if first_open == 'plex' else ''}">
                                 <div class="link login-method-header">
                                     Sign In with Plex
                                 </div>
-                                <ul class="submenu login-button-plex" style="display: block;">
+                                <ul class="submenu login-button-plex" style="${'display: block;' if first_open == 'plex' else ''}">
                                     <li>
                                         <div>
                                             <button id="sign-in-plex" class="btn btn-bright login-button"><i class="fa fa-sign-in"></i>&nbsp; Sign In</button>
@@ -72,11 +95,12 @@
                                 </ul>
                             </li>
                             % endif
-                            <li class="${'open' if not plex_login else ''}">
+                            % if password_login:
+                            <li class="${'open' if first_open == 'password' else ''}">
                                 <div class="link login-method-header">
                                     Sign In with Tautulli
                                 </div>
-                                <ul class="submenu" style="${'display: block;' if not plex_login else ''}">
+                                <ul class="submenu" style="${'display: block;' if first_open == 'password' else ''}">
                                     <li>
                                         <form id="login-form">
                                             <div class="form-group">
@@ -103,6 +127,7 @@
                                     </li>
                                 </ul>
                             </li>
+                            % endif
                         </ul>
                     </div>
                 </div>
@@ -132,6 +157,21 @@
 
     $('#sign-in-plex').click(function() {
         PlexOAuth(OAuthSuccessCallback, OAuthErrorCallback, OAuthMaxRetryCallback, null, OAuthPreFunction);
+    });
+
+    $('#sign-in-oidc').click(function() {
+        $('.login-container button').prop('disabled', true);
+        $(this).html('<i class="fa fa-refresh fa-spin"></i>&nbsp; Sign In');
+        window.location = '${http_root}auth/oidc_login?' + $.param({
+            redirect_uri: $(this).data('redirect-uri'),
+            remember_me: $('#remember_me_oidc').is(':checked') ? '1' : '0'
+        });
+    });
+
+    // Restore the button when returning from the identity provider with the back button
+    $(window).on('pageshow', function() {
+        $('.login-container button').prop('disabled', false);
+        $('#sign-in-oidc').html('<i class="fa fa-sign-in"></i>&nbsp; Sign In');
     });
 
     $('#login-form').submit(function(event) {

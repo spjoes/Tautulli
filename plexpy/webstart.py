@@ -27,6 +27,7 @@ import cherrypy_cors
 
 import plexpy
 from plexpy import logger
+from plexpy import oidc
 from plexpy import webauth
 from plexpy.helpers import create_https_certificates, hash_pms_uuid
 from plexpy.webserve import WebInterface, BaseRedirect
@@ -108,7 +109,8 @@ def start():
         'https_min_tls_version': plexpy.CONFIG.HTTPS_MIN_TLS_VERSION,
         'http_username': plexpy.CONFIG.HTTP_USERNAME,
         'http_password': plexpy.CONFIG.HTTP_PASSWORD,
-        'http_basic_auth': plexpy.CONFIG.HTTP_BASIC_AUTH
+        'http_basic_auth': plexpy.CONFIG.HTTP_BASIC_AUTH,
+        'oidc_enabled': plexpy.CONFIG.OIDC_ENABLED
     }
     initialize(web_config)
 
@@ -192,20 +194,35 @@ def initialize(options):
         # Overwrite cherrypy.tools.proxy with our own proxy handler
         cherrypy.tools.proxy = cherrypy.Tool('before_handler', proxy, priority=1)
 
-    if options['http_password']:
-        login_allowed = ["Tautulli admin (username is '%s')" % options['http_username']]
+    oidc_enabled = options.get('oidc_enabled')
+
+    if webauth.use_basic_auth(options['http_password'], options['http_basic_auth']):
+        logger.info("Tautulli WebStart :: Web server authentication is enabled: "
+                    "HTTP basic authentication (username is '%s').", options['http_username'])
+        if oidc_enabled:
+            logger.warn("Tautulli WebStart :: OpenID Connect login is not available with HTTP basic authentication.")
+
+        plexpy.AUTH_ENABLED = False
+        basic_auth_enabled = True
+
+    elif webauth.use_form_auth(options['http_password'], options['http_basic_auth'], oidc_enabled):
+        login_allowed = []
+        if options['http_password']:
+            login_allowed.append("Tautulli admin (username is '%s')" % options['http_username'])
+        if oidc_enabled:
+            login_allowed.append("OpenID Connect")
         if plexpy.CONFIG.HTTP_PLEX_ADMIN:
             login_allowed.append("Plex admin")
 
         logger.info("Tautulli WebStart :: Web server authentication is enabled: %s.", ' and '.join(login_allowed))
 
-        if options['http_basic_auth']:
-            plexpy.AUTH_ENABLED = False
-            basic_auth_enabled = True
-        else:
-            plexpy.AUTH_ENABLED = True
-            basic_auth_enabled = False
-            cherrypy.tools.auth = cherrypy.Tool('before_handler', webauth.check_auth, priority=2)
+        if oidc_enabled:
+            for error in oidc.config_errors():
+                logger.warn("Tautulli WebStart :: OpenID Connect login will fail until this is fixed: %s", error)
+
+        plexpy.AUTH_ENABLED = True
+        basic_auth_enabled = False
+        cherrypy.tools.auth = cherrypy.Tool('before_handler', webauth.check_auth, priority=2)
     else:
         logger.warn("Tautulli WebStart :: Web server authentication is disabled!")
 

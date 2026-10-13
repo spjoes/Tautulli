@@ -3371,10 +3371,16 @@ class WebInterface(object):
         else:
             settings_dict['http_password'] = ''
 
+        if plexpy.CONFIG.OIDC_CLIENT_SECRET != '':
+            settings_dict['oidc_client_secret'] = '    '
+        else:
+            settings_dict['oidc_client_secret'] = ''
+
         for key in ('home_sections', 'home_stats_cards', 'home_library_cards'):
             settings_dict[key] = json.dumps(settings_dict[key])
 
-        return serve_template(template_name="settings.html", title="Settings", config=settings_dict)
+        return serve_template(template_name="settings.html", title="Settings", config=settings_dict,
+                              oidc_callback_url=self.auth.oidc_callback_url())
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['POST'])
@@ -3411,7 +3417,7 @@ class WebInterface(object):
 
         verbose_changed = not first_run and kwargs.get('verbose_logs') != plexpy.CONFIG.VERBOSE_LOGS
 
-        # Refresh the JWT secret on restart to log out clients when the password changes
+        # Refresh the JWT secret on restart to log out clients when who can log in changes
         update_jwt_secret = False
 
         # If http password exists in config, do not overwrite when blank value received
@@ -3422,6 +3428,14 @@ class WebInterface(object):
                 kwargs['http_password'] = make_hash(kwargs['http_password'])
                 update_jwt_secret = True
             elif plexpy.CONFIG.HTTP_PASSWORD:
+                update_jwt_secret = True
+
+        if kwargs.get('oidc_client_secret') == '    ':
+            del kwargs['oidc_client_secret']
+
+        for key in ('oidc_enabled', 'oidc_issuer', 'oidc_client_id', 'oidc_username_claim',
+                    'oidc_groups_claim', 'oidc_allowed_users', 'oidc_allowed_groups'):
+            if key in kwargs and str(kwargs[key]) != str(getattr(plexpy.CONFIG, key.upper())):
                 update_jwt_secret = True
 
         for plain_config, use_config in [(x[4:], x) for x in kwargs if x.startswith('use_')]:
